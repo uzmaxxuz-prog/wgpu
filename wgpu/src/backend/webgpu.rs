@@ -843,7 +843,47 @@ fn map_wgt_features(supported_features: webgpu_sys::GpuSupportedFeatures) -> wgt
     features
 }
 
+const CORE_FEATURES_AND_LIMITS: &str = "core-features-and-limits";
+
+/// Reads a limit the browser may not know, such as the stage-specific storage limits added with
+/// WebGPU compatibility mode. `None` means the implementation predates the limit.
+fn optional_limit(limits: &webgpu_sys::GpuSupportedLimits, name: &str) -> Option<u32> {
+    js_sys::Reflect::get(limits.as_ref(), &wasm_bindgen::JsValue::from_str(name))
+        .ok()?
+        .as_f64()
+        .map(|value| value as u32)
+}
+
+/// Reports whether an adapter or device runs in WebGPU compatibility mode: the implementation
+/// knows the compatibility limits and does not offer `core-features-and-limits`.
+fn compatibility_mode(
+    features: &webgpu_sys::GpuSupportedFeatures,
+    limits: &webgpu_sys::GpuSupportedLimits,
+) -> bool {
+    !features.has(CORE_FEATURES_AND_LIMITS)
+        && optional_limit(limits, "maxStorageBuffersInVertexStage").is_some()
+}
+
+/// The storage limit every shader stage can rely on: compatibility mode limits the vertex and
+/// fragment stages separately, and wgpu has one per-stage limit.
+fn shared_stage_limit(limits: &webgpu_sys::GpuSupportedLimits, per_stage: u32, stages: [&str; 2]) -> u32 {
+    stages
+        .into_iter()
+        .filter_map(|name| optional_limit(limits, name))
+        .fold(per_stage, u32::min)
+}
+
 fn map_wgt_limits(limits: webgpu_sys::GpuSupportedLimits) -> wgt::Limits {
+    let max_storage_buffers_per_shader_stage = shared_stage_limit(
+        &limits,
+        limits.max_storage_buffers_per_shader_stage(),
+        ["maxStorageBuffersInVertexStage", "maxStorageBuffersInFragmentStage"],
+    );
+    let max_storage_textures_per_shader_stage = shared_stage_limit(
+        &limits,
+        limits.max_storage_textures_per_shader_stage(),
+        ["maxStorageTexturesInVertexStage", "maxStorageTexturesInFragmentStage"],
+    );
     wgt::Limits {
         max_texture_dimension_1d: limits.max_texture_dimension_1d(),
         max_texture_dimension_2d: limits.max_texture_dimension_2d(),
@@ -858,8 +898,8 @@ fn map_wgt_limits(limits: webgpu_sys::GpuSupportedLimits) -> wgt::Limits {
             .max_dynamic_storage_buffers_per_pipeline_layout(),
         max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage(),
         max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage(),
-        max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage(),
-        max_storage_textures_per_shader_stage: limits.max_storage_textures_per_shader_stage(),
+        max_storage_buffers_per_shader_stage,
+        max_storage_textures_per_shader_stage,
         max_uniform_buffers_per_shader_stage: limits.max_uniform_buffers_per_shader_stage(),
         max_binding_array_elements_per_shader_stage: 0,
         max_binding_array_sampler_elements_per_shader_stage: 0,
@@ -1692,6 +1732,9 @@ impl dispatch::InstanceInterface for ContextWebGpu {
         if let Some(mapped_pref) = mapped_power_preference {
             mapped_options.set_power_preference(mapped_pref);
         }
+        // A core-capable browser still returns a core adapter; devices without core support
+        // (OpenGL ES, blocklisted Vulkan drivers) return a compatibility adapter instead of none.
+        mapped_options.set_feature_level("compatibility");
 
         if let Some(gpu) = &self.gpu {
             let adapter_promise = gpu.request_adapter_with_options(&mapped_options);
@@ -1780,6 +1823,22 @@ impl dispatch::AdapterInterface for WebAdapter {
         let mapped_desc = webgpu_sys::GpuDeviceDescriptor::new();
 
         let required_limits = map_js_sys_limits(&desc.required_limits);
+        let adapter_limits = self.inner.limits();
+        for (stage, per_stage) in [
+            ("maxStorageBuffersInVertexStage", desc.required_limits.max_storage_buffers_per_shader_stage),
+            ("maxStorageBuffersInFragmentStage", desc.required_limits.max_storage_buffers_per_shader_stage),
+            ("maxStorageTexturesInVertexStage", desc.required_limits.max_storage_textures_per_shader_stage),
+            ("maxStorageTexturesInFragmentStage", desc.required_limits.max_storage_textures_per_shader_stage),
+        ] {
+            if let Some(supported) = optional_limit(&adapter_limits, stage) {
+                js_sys::Reflect::set(
+                    &required_limits,
+                    &wasm_bindgen::JsValue::from_str(stage),
+                    &wasm_bindgen::JsValue::from(per_stage.min(supported) as f64),
+                )
+                .expect("Setting Object properties should never fail.");
+            }
+        }
         mapped_desc.set_required_limits(&required_limits);
 
         let required_features = FEATURES_MAPPING
@@ -1796,6 +1855,12 @@ impl dispatch::AdapterInterface for WebAdapter {
                     None
                 }
             })
+            .chain(
+                self.inner
+                    .features()
+                    .has(CORE_FEATURES_AND_LIMITS)
+                    .then(|| js_sys::JsString::from(CORE_FEATURES_AND_LIMITS)),
+            )
             .collect::<Vec<js_sys::JsString>>();
         mapped_desc.set_required_features(&required_features);
 
@@ -1825,8 +1890,30 @@ impl dispatch::AdapterInterface for WebAdapter {
     }
 
     fn downlevel_capabilities(&self) -> crate::DownlevelCapabilities {
-        // WebGPU is assumed to be fully compliant
-        crate::DownlevelCapabilities::default()
+        let limits = self.inner.limits();
+        if !compatibility_mode(&self.inner.features(), &limits) {
+            return crate::DownlevelCapabilities::default();
+        }
+        // https://gpuweb.github.io/gpuweb/#core-features-and-limits lists what compatibility
+        // mode removes; devices are created in the same mode because `request_device` enables
+        // `core-features-and-limits` exactly when the adapter offers it.
+        let mut flags = crate::DownlevelFlags::all()
+            - crate::DownlevelFlags::VIEW_FORMATS
+            - crate::DownlevelFlags::SURFACE_VIEW_FORMATS
+            - crate::DownlevelFlags::CUBE_ARRAY_TEXTURES
+            - crate::DownlevelFlags::INDEPENDENT_BLEND
+            - crate::DownlevelFlags::MULTISAMPLED_SHADING
+            - crate::DownlevelFlags::DEPTH_BIAS_CLAMP;
+        if optional_limit(&limits, "maxStorageBuffersInVertexStage") == Some(0) {
+            flags -= crate::DownlevelFlags::VERTEX_STORAGE;
+        }
+        if optional_limit(&limits, "maxStorageBuffersInFragmentStage") == Some(0) {
+            flags -= crate::DownlevelFlags::FRAGMENT_STORAGE;
+        }
+        crate::DownlevelCapabilities {
+            flags,
+            ..crate::DownlevelCapabilities::default()
+        }
     }
 
     fn get_info(&self) -> crate::AdapterInfo {
