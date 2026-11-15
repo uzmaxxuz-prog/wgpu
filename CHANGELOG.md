@@ -44,6 +44,10 @@ Bottom level categories:
 
 ### Added/New Features
 
+#### WebGPU
+
+- Add optional `TextureDescriptor::texture_binding_view_dimension` for texture bindings in compatibility mode. Native backends ignore it; existing descriptor literals must set it to `None` to retain the previous behavior.
+
 #### naga
 
 - Add GLSL frontend configuration for typed opaque aliases and independent builtin overload families, and support stores through storage-image function parameters.
