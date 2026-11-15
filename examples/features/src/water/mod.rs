@@ -195,6 +195,7 @@ impl Example {
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
+            texture_binding_view_dimension: None,
         });
 
         let draw_depth_buffer = device.create_texture(&wgpu::TextureDescriptor {
@@ -208,6 +209,7 @@ impl Example {
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
+            texture_binding_view_dimension: None,
         });
 
         let color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {

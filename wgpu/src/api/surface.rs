@@ -176,6 +176,7 @@ impl Surface<'_> {
             sample_count: 1,
             dimension: TextureDimension::D2,
             view_formats: &[],
+            texture_binding_view_dimension: None,
         };
 
         match texture {

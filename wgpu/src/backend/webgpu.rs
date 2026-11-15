@@ -2560,6 +2560,9 @@ impl dispatch::DeviceInterface for WebDevice {
         mapped_desc.set_dimension(map_texture_dimension(desc.dimension));
         mapped_desc.set_mip_level_count(desc.mip_level_count);
         mapped_desc.set_sample_count(desc.sample_count);
+        if let Some(dimension) = desc.texture_binding_view_dimension {
+            mapped_desc.set_texture_binding_view_dimension(map_texture_view_dimension(dimension));
+        }
         let mapped_view_formats = desc
             .view_formats
             .iter()

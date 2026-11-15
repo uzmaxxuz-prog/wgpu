@@ -196,6 +196,7 @@ impl Surface {
                     dimension: wgt::TextureDimension::D2,
                     usage: config.usage,
                     view_formats: config.view_formats,
+                    texture_binding_view_dimension: None,
                 };
                 let format_features = wgt::TextureFormatFeatures {
                     allowed_usages: wgt::TextureUsages::RENDER_ATTACHMENT,

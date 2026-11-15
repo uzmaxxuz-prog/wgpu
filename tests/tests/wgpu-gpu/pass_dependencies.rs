@@ -103,6 +103,7 @@ async fn dependent_passes_in_one_encoder(ctx: TestingContext) {
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
+        texture_binding_view_dimension: None,
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
